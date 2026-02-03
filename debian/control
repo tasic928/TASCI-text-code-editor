@@ -1,0 +1,21 @@
+Source: tasci
+Section: editors
+Priority: optional
+Maintainer: Stefan Tasic <stefan@example.com>
+Build-Depends: debhelper-compat (= 13), libncurses-dev
+Standards-Version: 4.6.0
+
+Package: tasci
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libc6, libncurses6
+Description: TASCI - terminal text editor
+ A lightweight, terminal-based text editor with syntax highlighting,
+ file explorer, and customizable themes.
+ .
+ Features:
+  - Menu bar with Edit, View, Find, Help, File options
+  - File explorer (left sidebar)
+  - Syntax highlighting for multiple programming languages
+  - Dark and light theme support
+  - Open folder by full path
+  - Search and replace functionality

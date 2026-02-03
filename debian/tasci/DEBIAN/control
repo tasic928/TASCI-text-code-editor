@@ -1,0 +1,19 @@
+Package: tasci
+Version: 0.1.0-1
+Architecture: amd64
+Maintainer: Stefan Tasic <stefan@example.com>
+Installed-Size: 130
+Depends: libc6 (>= 2.34), libncurses6 (>= 6), libtinfo6 (>= 6)
+Section: editors
+Priority: optional
+Description: TASCI - terminal text editor
+ A lightweight, terminal-based text editor with syntax highlighting,
+ file explorer, and customizable themes.
+ .
+ Features:
+  - Menu bar with Edit, View, Find, Help, File options
+  - File explorer (left sidebar)
+  - Syntax highlighting for multiple programming languages
+  - Dark and light theme support
+  - Open folder by full path
+  - Search and replace functionality
