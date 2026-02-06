@@ -1,3 +1,9 @@
+tasci (0.1.0-2) unstable; urgency=medium
+
+  * Enable dynamic line buffer and line numbers by default.
+
+ -- Stefan Tasic <stefan@example.com>  Wed, 04 Feb 2026 09:04:47 -0500
+
 tasci (0.1.0-1) unstable; urgency=medium
 
   * Initial release.

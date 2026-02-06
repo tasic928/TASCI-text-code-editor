@@ -1,6 +1,6 @@
 # TASCI Features
 
-- Menu bar with Edit, View, Find, Help, File, About
+- Menu bar with Edit, View, Settings, Find, Shortcuts, File, About
 - Explorer sidebar for navigating directories and files
 - Editor pane with line numbers (toggle)
 - Status bar with file info and temporary status messages
@@ -14,4 +14,7 @@
 - Time/date insert (menu shortcut)
 - Keyboard navigation (arrows, Enter, Ctrl+S save, Ctrl+X exit)
 - Resize-aware layout
-- Syntax highlighting for keywords (by file extension)
+- Syntax highlighting (keywords, comments, strings, numbers) by file extension
+- Keyword autocomplete (languages listed in lsp_autocomplete.h)
+- Session restore (reopens last folder/file + cursor position)
+- Settings dialog (toggle view options and move the explorer to left/right)

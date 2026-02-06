@@ -8,16 +8,40 @@ typedef struct {
     const char *name;
     const char **exts;     /* file extensions, without dot, NULL-terminated */
     const char **keywords; /* keywords, NULL-terminated */
+    const char *line_comment;        /* e.g. //, #, -- */
+    const char *block_comment_start; /* e.g. "/ *" (slash-asterisk) */
+    const char *block_comment_end;   /* e.g. "* /" (asterisk-slash) */
+    const char *string_delims;       /* characters that start/end strings, e.g. "\"'`" */
+    int flags;
 } SyntaxLang;
+
+enum {
+    SH_FLAG_KW_CASE_INSENSITIVE = 1 << 0,
+};
 
 static inline int sh_word_eq(const char *w, int len, const char *kw) {
     return (int)strlen(kw) == len && strncmp(w, kw, (size_t)len) == 0;
 }
 
+static inline int sh_word_eq_ci(const char *w, int len, const char *kw) {
+    if ((int)strlen(kw) != len) return 0;
+    for (int i = 0; i < len; i++) {
+        char a = (char)tolower((unsigned char)w[i]);
+        char b = (char)tolower((unsigned char)kw[i]);
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
 static inline int sh_is_keyword(const SyntaxLang *lang, const char *w, int len) {
     if (!lang || !w || len <= 0) return 0;
+    int ci = (lang->flags & SH_FLAG_KW_CASE_INSENSITIVE) != 0;
     for (int i = 0; lang->keywords[i]; i++) {
-        if (sh_word_eq(w, len, lang->keywords[i])) return 1;
+        if (ci) {
+            if (sh_word_eq_ci(w, len, lang->keywords[i])) return 1;
+        } else {
+            if (sh_word_eq(w, len, lang->keywords[i])) return 1;
+        }
     }
     return 0;
 }
@@ -71,6 +95,21 @@ static const char *kw_cpp[] = {
     "reinterpret_cast","return","short","signed","sizeof","static","struct",
     "switch","template","this","throw","true","try","typedef","typeid",
     "typename","union","unsigned","using","virtual","void","volatile","while",
+    NULL
+};
+
+static const char *kw_d[] = {
+    "alias","align","asm","assert","auto","body","bool","break","byte","case","cast",
+    "catch","cdouble","cent","cfloat","char","class","const","continue","creal",
+    "dchar","debug","default","delegate","delete","deprecated","do","double","else",
+    "enum","export","extern","false","final","finally","float","for","foreach",
+    "foreach_reverse","function","goto","if","immutable","import","in","inout",
+    "interface","invariant","is","lazy","long","macro","mixin","module","new",
+    "nothrow","null","out","override","package","pragma","private","protected",
+    "public","pure","real","ref","return","scope","shared","short","static",
+    "struct","super","switch","synchronized","template","this","throw","true",
+    "try","typedef","typeid","typeof","ubyte","ucent","uint","ulong","union",
+    "unittest","ushort","version","void","volatile","wchar","while","with",
     NULL
 };
 
@@ -470,6 +509,7 @@ static const char *kw_raku[] = {
 /* ---- Extensions ---- */
 static const char *ext_c[] = {"c","h", NULL};
 static const char *ext_cpp[] = {"cpp","cc","cxx","hpp","hxx","hh", NULL};
+static const char *ext_d[] = {"d", NULL};
 static const char *ext_go[] = {"go", NULL};
 static const char *ext_java[] = {"java", NULL};
 static const char *ext_js[] = {"js","mjs","cjs", NULL};
@@ -531,69 +571,77 @@ static const char *ext_oberon[] = {"obn","obp","mod", NULL};
 static const char *ext_raku[] = {"raku","rakumod","pm6","p6", NULL};
 
 /* ---- Language registry ---- */
+#define SH_STR_SQ_DQ "\"'"
+#define SH_STR_DQ "\""
+#define SH_STR_SQ_DQ_BT "\"'`"
+
+#define SH_LANG(name, exts, kw, lc, bcs, bce, strs, flags) \
+    { (name), (exts), (kw), (lc), (bcs), (bce), (strs), (flags) }
+
 static const SyntaxLang sh_langs[] = {
-    {"C", ext_c, kw_c},
-    {"C++", ext_cpp, kw_cpp},
-    {"Golang", ext_go, kw_go},
-    {"Java", ext_java, kw_java},
-    {"JavaScript", ext_js, kw_js},
-    {"TypeScript", ext_ts, kw_ts},
-    {"Python", ext_py, kw_py},
-    {"PySpark", ext_py, kw_pyspark},
-    {"R", ext_r, kw_r},
-    {"Csharp", ext_csharp, kw_csharp},
-    {"Julia", ext_julia, kw_julia},
-    {"Perl", ext_perl, kw_perl},
-    {"Matlab", ext_matlab, kw_matlab},
-    {"Kotlin", ext_kotlin, kw_kotlin},
-    {"PHP", ext_php, kw_php},
-    {"Ruby", ext_ruby, kw_ruby},
-    {"Rust", ext_rust, kw_rust},
-    {"Lua", ext_lua, kw_lua},
-    {"SAS", ext_sas, kw_sas},
-    {"Fortran", ext_fortran, kw_fortran},
-    {"Lisp", ext_lisp, kw_lisp},
-    {"Scala", ext_scala, kw_scala},
-    {"Assembly", ext_asm, kw_asm},
-    {"ActionScript", ext_actionscript, kw_actionscript},
-    {"Clojure", ext_clojure, kw_clojure},
-    {"CoffeeScript", ext_coffeescript, kw_coffeescript},
-    {"Dart", ext_dart, kw_dart},
-    {"COBOL", ext_cobol, kw_cobol},
-    {"Elixir", ext_elixir, kw_elixir},
-    {"Groovy", ext_groovy, kw_groovy},
-    {"Erlang", ext_erlang, kw_erlang},
-    {"Haskell", ext_haskell, kw_haskell},
-    {"Pascal", ext_pascal, kw_pascal},
-    {"Swift", ext_swift, kw_swift},
-    {"Scheme", ext_scheme, kw_scheme},
-    {"Racket", ext_racket, kw_racket},
-    {"OCaml", ext_ocaml, kw_ocaml},
-    {"Elm", ext_elm, kw_elm},
-    {"Haxe", ext_haxe, kw_haxe},
-    {"Crystal", ext_crystal, kw_crystal},
-    {"Fsharp", ext_fsharp, kw_fsharp},
-    {"Tcl", ext_tcl, kw_tcl},
-    {"VB.NET", ext_vbnet, kw_vbnet},
-    {"Objective_C", ext_objc, kw_objc},
-    {"Ada", ext_ada, kw_ada},
-    {"Vala", ext_vala, kw_vala},
-    {"SQL", ext_sql, kw_sql},
-    {"VB6", ext_vb6, kw_vb6},
-    {"VBA", ext_vba, kw_vba},
-    {"VBScript", ext_vbscript, kw_vbscript},
-    {"PowerShell", ext_powershell, kw_powershell},
-    {"Bash", ext_bash, kw_bash},
-    {"Delphi", ext_delphi, kw_delphi},
-    {"Zig", ext_zig, kw_zig},
-    {"Carbon", ext_carbon, kw_carbon},
-    {"Nim", ext_nim, kw_nim},
-    {"Grain", ext_grain, kw_grain},
-    {"Gleam", ext_gleam, kw_gleam},
-    {"Wren", ext_wren, kw_wren},
-    {"Janet", ext_janet, kw_janet},
-    {"Oberon+", ext_oberon, kw_oberon},
-    {"Raku", ext_raku, kw_raku},
+    SH_LANG("C", ext_c, kw_c, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("C++", ext_cpp, kw_cpp, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("D", ext_d, kw_d, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Golang", ext_go, kw_go, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Java", ext_java, kw_java, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("JavaScript", ext_js, kw_js, "//", "/*", "*/", SH_STR_SQ_DQ_BT, 0),
+    SH_LANG("TypeScript", ext_ts, kw_ts, "//", "/*", "*/", SH_STR_SQ_DQ_BT, 0),
+    SH_LANG("Python", ext_py, kw_py, "#", NULL, NULL, SH_STR_SQ_DQ, 0),
+    SH_LANG("PySpark", ext_py, kw_pyspark, "#", NULL, NULL, SH_STR_SQ_DQ, 0),
+    SH_LANG("R", ext_r, kw_r, "#", NULL, NULL, SH_STR_SQ_DQ, 0),
+    SH_LANG("Csharp", ext_csharp, kw_csharp, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Julia", ext_julia, kw_julia, "#", "#=", "=#", SH_STR_SQ_DQ, 0),
+    SH_LANG("Perl", ext_perl, kw_perl, "#", NULL, NULL, SH_STR_SQ_DQ, 0),
+    SH_LANG("Matlab", ext_matlab, kw_matlab, "%", "%{", "%}", SH_STR_SQ_DQ, 0),
+    SH_LANG("Kotlin", ext_kotlin, kw_kotlin, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("PHP", ext_php, kw_php, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Ruby", ext_ruby, kw_ruby, "#", NULL, NULL, SH_STR_SQ_DQ, 0),
+    SH_LANG("Rust", ext_rust, kw_rust, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Lua", ext_lua, kw_lua, "--", "--[[", "]]", SH_STR_SQ_DQ, 0),
+    SH_LANG("SAS", ext_sas, kw_sas, NULL, "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Fortran", ext_fortran, kw_fortran, "!", NULL, NULL, SH_STR_SQ_DQ, SH_FLAG_KW_CASE_INSENSITIVE),
+    SH_LANG("Lisp", ext_lisp, kw_lisp, ";", "#|", "|#", SH_STR_DQ, 0),
+    SH_LANG("Scala", ext_scala, kw_scala, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Assembly", ext_asm, kw_asm, ";", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("ActionScript", ext_actionscript, kw_actionscript, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Clojure", ext_clojure, kw_clojure, ";", NULL, NULL, SH_STR_DQ, 0),
+    SH_LANG("CoffeeScript", ext_coffeescript, kw_coffeescript, "#", "###", "###", SH_STR_SQ_DQ_BT, 0),
+    SH_LANG("Dart", ext_dart, kw_dart, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("COBOL", ext_cobol, kw_cobol, "*>", NULL, NULL, SH_STR_SQ_DQ, SH_FLAG_KW_CASE_INSENSITIVE),
+    SH_LANG("Elixir", ext_elixir, kw_elixir, "#", NULL, NULL, SH_STR_SQ_DQ, 0),
+    SH_LANG("Groovy", ext_groovy, kw_groovy, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Erlang", ext_erlang, kw_erlang, "%", NULL, NULL, SH_STR_SQ_DQ, 0),
+    SH_LANG("Haskell", ext_haskell, kw_haskell, "--", "{-", "-}", SH_STR_SQ_DQ, 0),
+    SH_LANG("Pascal", ext_pascal, kw_pascal, "//", "{", "}", SH_STR_SQ_DQ, SH_FLAG_KW_CASE_INSENSITIVE),
+    SH_LANG("Swift", ext_swift, kw_swift, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Scheme", ext_scheme, kw_scheme, ";", "#|", "|#", SH_STR_DQ, 0),
+    SH_LANG("Racket", ext_racket, kw_racket, ";", "#|", "|#", SH_STR_DQ, 0),
+    SH_LANG("OCaml", ext_ocaml, kw_ocaml, NULL, "(*", "*)", SH_STR_DQ, 0),
+    SH_LANG("Elm", ext_elm, kw_elm, "--", "{-", "-}", SH_STR_SQ_DQ, 0),
+    SH_LANG("Haxe", ext_haxe, kw_haxe, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Crystal", ext_crystal, kw_crystal, "#", NULL, NULL, SH_STR_SQ_DQ, 0),
+    SH_LANG("Fsharp", ext_fsharp, kw_fsharp, "//", "(*", "*)", SH_STR_SQ_DQ, 0),
+    SH_LANG("Tcl", ext_tcl, kw_tcl, "#", NULL, NULL, SH_STR_SQ_DQ, 0),
+    SH_LANG("VB.NET", ext_vbnet, kw_vbnet, "\'", NULL, NULL, SH_STR_DQ, SH_FLAG_KW_CASE_INSENSITIVE),
+    SH_LANG("Objective_C", ext_objc, kw_objc, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Ada", ext_ada, kw_ada, "--", NULL, NULL, SH_STR_SQ_DQ, SH_FLAG_KW_CASE_INSENSITIVE),
+    SH_LANG("Vala", ext_vala, kw_vala, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("SQL", ext_sql, kw_sql, "--", "/*", "*/", SH_STR_SQ_DQ, SH_FLAG_KW_CASE_INSENSITIVE),
+    SH_LANG("VB6", ext_vb6, kw_vb6, "\'", NULL, NULL, SH_STR_DQ, SH_FLAG_KW_CASE_INSENSITIVE),
+    SH_LANG("VBA", ext_vba, kw_vba, "\'", NULL, NULL, SH_STR_DQ, SH_FLAG_KW_CASE_INSENSITIVE),
+    SH_LANG("VBScript", ext_vbscript, kw_vbscript, "\'", NULL, NULL, SH_STR_DQ, SH_FLAG_KW_CASE_INSENSITIVE),
+    SH_LANG("PowerShell", ext_powershell, kw_powershell, "#", "<#", "#>", SH_STR_SQ_DQ, SH_FLAG_KW_CASE_INSENSITIVE),
+    SH_LANG("Bash", ext_bash, kw_bash, "#", NULL, NULL, SH_STR_SQ_DQ, 0),
+    SH_LANG("Delphi", ext_delphi, kw_delphi, "//", "{", "}", SH_STR_SQ_DQ, SH_FLAG_KW_CASE_INSENSITIVE),
+    SH_LANG("Zig", ext_zig, kw_zig, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Carbon", ext_carbon, kw_carbon, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Nim", ext_nim, kw_nim, "#", "#[", "]#", SH_STR_SQ_DQ, 0),
+    SH_LANG("Grain", ext_grain, kw_grain, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Gleam", ext_gleam, kw_gleam, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Wren", ext_wren, kw_wren, "//", "/*", "*/", SH_STR_SQ_DQ, 0),
+    SH_LANG("Janet", ext_janet, kw_janet, "#", NULL, NULL, SH_STR_SQ_DQ, 0),
+    SH_LANG("Oberon+", ext_oberon, kw_oberon, NULL, "(*", "*)", SH_STR_DQ, SH_FLAG_KW_CASE_INSENSITIVE),
+    SH_LANG("Raku", ext_raku, kw_raku, "#", NULL, NULL, SH_STR_SQ_DQ, 0),
 };
 
 static inline const SyntaxLang *sh_lang_for_file(const char *path) {
