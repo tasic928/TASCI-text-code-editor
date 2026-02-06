@@ -1,0 +1,11 @@
+# Build artifacts
+*.o
+tasci
+
+# Debian packaging build outputs
+debian/.debhelper/
+debian/tasci/
+debian/files
+debian/*.log
+debian/*.substvars
+debian/debhelper-build-stamp
