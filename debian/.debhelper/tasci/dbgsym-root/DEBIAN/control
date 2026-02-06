@@ -1,12 +1,13 @@
 Package: tasci-dbgsym
+Package-Type: ddeb
 Source: tasci
 Version: 0.1.0-2
 Auto-Built-Package: debug-symbols
 Architecture: amd64
 Maintainer: Stefan Tasic <stefan@example.com>
-Installed-Size: 56
+Installed-Size: 88
 Depends: tasci (= 0.1.0-2)
 Section: debug
 Priority: optional
 Description: debug symbols for tasci
-Build-Ids: 0fecaad431fbb08b3e079e5b9f20813ba02abf1f
+Build-Ids: 74894554aed65190e7797e274f7b3215a2efa525
