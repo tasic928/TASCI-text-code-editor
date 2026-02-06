@@ -18,3 +18,4 @@
 - Keyword autocomplete (languages listed in lsp_autocomplete.h)
 - Session restore (reopens last folder/file + cursor position)
 - Settings dialog (toggle view options and move the explorer to left/right)
+- Theme support and theme creator (also theres an option to bring back your default theme)
