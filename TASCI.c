@@ -28,6 +28,12 @@
 #include <termios.h>
 #include <errno.h>
 #include <fcntl.h>
+
+void draw_menu();
+void draw_tabs();
+void draw_sidebar();
+void draw_editor();
+void draw_status(const char *msg);
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <signal.h>
@@ -48,10 +54,10 @@
 #define MAX_LINE 1024
 #define CLIP_CAP (1024 * 1024)
 #define SIDEBAR 30
-#define MENU_ITEMS 11
+#define MENU_ITEMS 12
 #define MAIN_LOOP_TIMEOUT_MS 100
 
-enum Mode { MODE_EXPLORER, MODE_EDITOR, MODE_MENU, MODE_DIALOG };
+enum Mode { MODE_EXPLORER, MODE_EDITOR, MODE_MENU, MODE_TABS, MODE_DIALOG };
 enum Mode mode = MODE_EXPLORER;
 
 /* ---------- STATE ---------- */
@@ -67,13 +73,31 @@ char current_file[256] = "";
 int rowoff = 0, coloff = 0;
 int is_dirty = 0;
 
+#define MAX_TABS 16
+typedef struct {
+    char path[PATH_MAX];
+    char **buf;
+    int buf_cap;
+    int lines;
+    int cx, cy;
+    int rowoff, coloff;
+    int is_dirty;
+    unsigned char *hl_open_comment;
+    int hl_open_comment_cap;
+} Tab;
+
+static Tab tabs[MAX_TABS];
+static int tab_count = 0;
+static int tab_current = 0;
+static int tab_sel = 0;
+
 /* Syntax state: whether each line ends inside a block comment (for multiline comment highlighting) */
 unsigned char *hl_open_comment = NULL;
 int hl_open_comment_cap = 0;
 
 int menu_sel = 0;
 const char *menu_items[MENU_ITEMS] = {
-    "Edit", "View", "Settings", "Find", "Shortcuts", "File", "Terminal", "Save", "Save As", "Open Folder", "About"
+    "Edit", "View", "Settings", "Find", "Shortcuts", "File", "Terminal", "Save", "Save As", "Open Folder", "Theme", "About"
 };
 
 int blink_on = 1;
@@ -88,8 +112,59 @@ int soft_wrap = 0;
 /* Clipboard */
 char clip[CLIP_CAP];
 
+/* Theme import */
+static char current_theme_path[PATH_MAX] = "";
+static int theme_menu_bg = COLOR_BLUE;
+static int theme_menu_fg = COLOR_WHITE;
+static int theme_sidebar_bg = COLOR_WHITE;
+static int theme_sidebar_fg = COLOR_BLACK;
+static int theme_editor_bg = COLOR_BLACK;
+static int theme_editor_fg = COLOR_WHITE;
+static int theme_keyword_fg = COLOR_CYAN;
+static int theme_comment_fg = COLOR_GREEN;
+static int theme_string_fg = COLOR_YELLOW;
+static int theme_number_fg = COLOR_MAGENTA;
+static int theme_preproc_fg = COLOR_BLUE;
+static int theme_status_bg = COLOR_BLUE;
+static int theme_status_fg = COLOR_WHITE;
+static int theme_next_color = 16;
+static int default_theme_menu_bg = COLOR_BLUE;
+static int default_theme_menu_fg = COLOR_WHITE;
+static int default_theme_sidebar_bg = COLOR_WHITE;
+static int default_theme_sidebar_fg = COLOR_BLACK;
+static int default_theme_editor_bg = COLOR_BLACK;
+static int default_theme_editor_fg = COLOR_WHITE;
+static int default_theme_keyword_fg = COLOR_CYAN;
+static int default_theme_comment_fg = COLOR_GREEN;
+static int default_theme_string_fg = COLOR_YELLOW;
+static int default_theme_number_fg = COLOR_MAGENTA;
+static int default_theme_preproc_fg = COLOR_BLUE;
+static int default_theme_status_bg = COLOR_BLUE;
+static int default_theme_status_fg = COLOR_WHITE;
+
+typedef struct {
+    int has_background;
+    int has_menu;
+    int has_sidebar;
+    int has_status;
+    int has_editor_bg;
+    int has_editor_text;
+    int has_keyword;
+    int has_line_numbers;
+    int has_accent;
+    int bg_r, bg_g, bg_b;
+    int menu_r, menu_g, menu_b;
+    int sidebar_r, sidebar_g, sidebar_b;
+    int status_r, status_g, status_b;
+    int editor_bg_r, editor_bg_g, editor_bg_b;
+    int editor_text_r, editor_text_g, editor_text_b;
+    int keyword_r, keyword_g, keyword_b;
+    int line_r, line_g, line_b;
+    int accent_r, accent_g, accent_b;
+} ThemeParsed;
+
 /* ---------- WINDOWS ---------- */
-WINDOW *menuw, *sidew, *mainw, *statusw;
+WINDOW *menuw, *tabw, *sidew, *mainw, *statusw;
 int sidebar_width = SIDEBAR;
 int sidebar_on_right = 0;
 char status_msg[256] = "TASCI Ready - Ctrl+X to exit";
@@ -103,6 +178,8 @@ static int session_restore_cy = 0;
 static int session_restore_has_cwd = 0;
 static int session_restore_has_file = 0;
 static int session_restore_has_cursor = 0;
+static char session_restore_theme_path[PATH_MAX] = "";
+static int session_restore_has_theme = 0;
 
 /* ---------- AUTOCOMPLETE ---------- */
 #define MAX_COMPLETIONS 64
@@ -146,6 +223,17 @@ static LspClient lsp = {0};
 /* ---------- UTIL ---------- */
 int popup_select(const char *title, const char *items[], int count);
 void load_dir(void);
+static void syntax_recalc_all(void);
+static void lsp_prepare_for_file(const char *file, const SyntaxLang *lang);
+static void set_status(const char *fmt, ...);
+static void state_save(void);
+void load_file(const char *f);
+void save_file(void);
+void save_file_as(void);
+static void tab_switch(int idx);
+static int tab_create_with_file(const char *path);
+static void tab_restore(int idx);
+static void get_mem_usage_cached(long *rss_kb_out, long *vsz_kb_out);
 
 static int num_digits(int n) {
     int d = 1;
@@ -210,6 +298,213 @@ static void buffer_init_if_needed(void) {
     lines = 1;
 }
 
+static void tab_store_current(void) {
+    if (tab_current < 0 || tab_current >= tab_count) return;
+    Tab *t = &tabs[tab_current];
+    strncpy(t->path, current_file, sizeof(t->path) - 1);
+    t->path[sizeof(t->path) - 1] = '\0';
+    t->buf = buf;
+    t->buf_cap = buf_cap;
+    t->lines = lines;
+    t->cx = cx;
+    t->cy = cy;
+    t->rowoff = rowoff;
+    t->coloff = coloff;
+    t->is_dirty = is_dirty;
+    t->hl_open_comment = hl_open_comment;
+    t->hl_open_comment_cap = hl_open_comment_cap;
+}
+
+static void tab_free_buffers(Tab *t) {
+    if (!t) return;
+    if (t->buf) {
+        for (int i = 0; i < t->lines; i++) {
+            free(t->buf[i]);
+        }
+        free(t->buf);
+        t->buf = NULL;
+    }
+    if (t->hl_open_comment) {
+        free(t->hl_open_comment);
+        t->hl_open_comment = NULL;
+    }
+    t->lines = 0;
+    t->buf_cap = 0;
+    t->hl_open_comment_cap = 0;
+}
+
+static int prompt_save_changes(void) {
+    const char *items[] = { "Yes", "No", "Cancel" };
+    int sel = popup_select("Do you want to save this file?", items, 3);
+    if (sel == 0) return 1;
+    if (sel == 1) return 0;
+    return -1;
+}
+
+static int tab_close(int idx) {
+    if (idx < 0 || idx >= tab_count) return 0;
+    tab_store_current();
+    int prev = tab_current;
+    if (tabs[idx].is_dirty) {
+        if (idx != tab_current) tab_switch(idx);
+        int choice = prompt_save_changes();
+        if (choice < 0) {
+            if (idx != prev) tab_switch(prev);
+            return 0;
+        }
+        if (choice == 1) {
+            if (current_file[0]) save_file();
+            else save_file_as();
+        }
+    }
+
+    tab_free_buffers(&tabs[idx]);
+    for (int i = idx; i < tab_count - 1; i++) {
+        tabs[i] = tabs[i + 1];
+    }
+    tab_count--;
+    if (tab_count <= 0) {
+        tab_count = 0;
+        tab_current = 0;
+        tab_sel = 0;
+        tab_create_with_file(NULL);
+        return 1;
+    }
+    if (idx <= tab_current && tab_current > 0) tab_current--;
+    if (tab_current >= tab_count) tab_current = tab_count - 1;
+    if (tab_sel >= tab_count) tab_sel = tab_count - 1;
+    tab_restore(tab_current);
+    return 1;
+}
+
+static int confirm_exit_all(void) {
+    tab_store_current();
+    int start = tab_current;
+    for (int i = 0; i < tab_count; i++) {
+        if (!tabs[i].is_dirty) continue;
+        tab_switch(i);
+        int choice = prompt_save_changes();
+        if (choice < 0) {
+            tab_switch(start);
+            return 0;
+        }
+        if (choice == 1) {
+            if (current_file[0]) save_file();
+            else save_file_as();
+        }
+    }
+    tab_switch(start);
+    return 1;
+}
+
+static void tab_restore(int idx) {
+    if (idx < 0 || idx >= tab_count) return;
+    Tab *t = &tabs[idx];
+    buf = t->buf;
+    buf_cap = t->buf_cap;
+    lines = t->lines;
+    cx = t->cx;
+    cy = t->cy;
+    rowoff = t->rowoff;
+    coloff = t->coloff;
+    is_dirty = t->is_dirty;
+    hl_open_comment = t->hl_open_comment;
+    hl_open_comment_cap = t->hl_open_comment_cap;
+    strncpy(current_file, t->path, sizeof(current_file) - 1);
+    current_file[sizeof(current_file) - 1] = '\0';
+    if (!buf) buffer_init_if_needed();
+    const SyntaxLang *lang = sh_lang_for_file(current_file);
+    lsp_prepare_for_file(current_file, lang);
+    syntax_recalc_all();
+    state_save();
+}
+
+static void tabs_init_from_current(void) {
+    if (tab_count > 0) return;
+    tab_count = 1;
+    tab_current = 0;
+    tab_sel = 0;
+    tab_store_current();
+}
+
+static int tab_find_by_path(const char *path) {
+    if (!path || !path[0]) return -1;
+    for (int i = 0; i < tab_count; i++) {
+        if (tabs[i].path[0] && strcmp(tabs[i].path, path) == 0) return i;
+    }
+    return -1;
+}
+
+static int tab_create_with_file(const char *path) {
+    if (tab_count >= MAX_TABS) {
+        set_status("Max tabs reached");
+        return -1;
+    }
+    if (tab_count > 0) tab_store_current();
+
+    buf = NULL;
+    buf_cap = 0;
+    lines = 0;
+    hl_open_comment = NULL;
+    hl_open_comment_cap = 0;
+    buffer_init_if_needed();
+
+    if (path && path[0]) {
+        load_file(path);
+    } else {
+        buffer_clear();
+        buffer_ensure_capacity(1);
+        if (!buf[0]) buf[0] = line_alloc_empty();
+        buf[0][0] = '\0';
+        lines = 1;
+        cx = cy = rowoff = coloff = 0;
+        is_dirty = 0;
+        current_file[0] = '\0';
+        if (hl_open_comment) memset(hl_open_comment, 0, (size_t)hl_open_comment_cap);
+        const SyntaxLang *lang = sh_lang_for_file(current_file);
+        lsp_prepare_for_file(current_file, lang);
+        syntax_recalc_all();
+        state_save();
+    }
+
+    tab_current = tab_count;
+    tab_count++;
+    tab_store_current();
+    return tab_current;
+}
+
+static void tab_switch(int idx) {
+    if (idx < 0 || idx >= tab_count || idx == tab_current) return;
+    completion_clear();
+    tab_store_current();
+    tab_current = idx;
+    tab_sel = idx;
+    tab_restore(tab_current);
+}
+
+static void tab_next(void) {
+    if (tab_count < 2) return;
+    int next = tab_current + 1;
+    if (next >= tab_count) next = 0;
+    tab_switch(next);
+}
+
+static void tab_prev(void) {
+    if (tab_count < 2) return;
+    int prev = tab_current - 1;
+    if (prev < 0) prev = tab_count - 1;
+    tab_switch(prev);
+}
+
+static void tab_open_file(const char *path) {
+    int idx = tab_find_by_path(path);
+    if (idx >= 0) {
+        tab_switch(idx);
+        return;
+    }
+    tab_create_with_file(path);
+}
+
 static void set_status(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -232,6 +527,56 @@ static void disable_flow_control(void) {
 static void restore_flow_control(void) {
     if (!termios_saved) return;
     tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
+}
+
+static void get_mem_usage_cached(long *rss_kb_out, long *vsz_kb_out) {
+#ifdef __linux__
+    static struct timeval last_check = {0, 0};
+    static long last_rss_kb = 0;
+    static long last_vsz_kb = 0;
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    long elapsed_ms = (now.tv_sec - last_check.tv_sec) * 1000L
+                    + (now.tv_usec - last_check.tv_usec) / 1000L;
+    if (elapsed_ms < 1000) {
+        if (rss_kb_out) *rss_kb_out = last_rss_kb;
+        if (vsz_kb_out) *vsz_kb_out = last_vsz_kb;
+        return;
+    }
+    last_check = now;
+
+    FILE *fp = fopen("/proc/self/status", "r");
+    if (!fp) {
+        if (rss_kb_out) *rss_kb_out = last_rss_kb;
+        if (vsz_kb_out) *vsz_kb_out = last_vsz_kb;
+        return;
+    }
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        if (strncmp(line, "VmRSS:", 6) == 0) {
+            long kb = 0;
+            if (sscanf(line + 6, "%ld", &kb) == 1 && kb > 0) {
+                last_rss_kb = kb;
+            }
+            continue;
+        }
+        if (strncmp(line, "VmSize:", 7) == 0) {
+            long kb = 0;
+            if (sscanf(line + 7, "%ld", &kb) == 1 && kb > 0) {
+                last_vsz_kb = kb;
+            }
+            continue;
+        }
+    }
+    fclose(fp);
+    if (rss_kb_out) *rss_kb_out = last_rss_kb;
+    if (vsz_kb_out) *vsz_kb_out = last_vsz_kb;
+    return;
+#else
+    if (rss_kb_out) *rss_kb_out = 0;
+    if (vsz_kb_out) *vsz_kb_out = 0;
+    return;
+#endif
 }
 
 /* ---------- SYNTAX (VSCode-like basics) ---------- */
@@ -481,6 +826,9 @@ static void state_save(void) {
     fprintf(fp, "file=%s\n", current_file);
     fprintf(fp, "cx=%d\n", cx);
     fprintf(fp, "cy=%d\n", cy);
+    if (current_theme_path[0]) {
+        fprintf(fp, "theme=%s\n", current_theme_path);
+    }
 
     fclose(fp);
     (void)rename(tmp, path);
@@ -494,6 +842,7 @@ static void state_load(void) {
     if (!fp) return;
     char line[PATH_MAX * 2];
     int have_cx = 0, have_cy = 0;
+    session_restore_has_theme = 0;
     while (fgets(line, sizeof(line), fp)) {
         str_rstrip(line);
         char *p = str_lstrip(line);
@@ -527,6 +876,12 @@ static void state_load(void) {
         } else if (strcmp(key, "cy") == 0) {
             session_restore_cy = atoi(val);
             have_cy = 1;
+        } else if (strcmp(key, "theme") == 0) {
+            if (val[0]) {
+                strncpy(session_restore_theme_path, val, sizeof(session_restore_theme_path) - 1);
+                session_restore_theme_path[sizeof(session_restore_theme_path) - 1] = '\0';
+                session_restore_has_theme = 1;
+            }
         }
     }
     fclose(fp);
@@ -945,8 +1300,11 @@ static void layout_windows(void) {
     wresize(menuw, 1, w); mvwin(menuw, 0, 0);
     int side_x = sidebar_on_right ? (w - side) : 0;
     int main_x = sidebar_on_right ? 0 : side;
-    wresize(sidew, h - 2, side); mvwin(sidew, 1, side_x);
-    wresize(mainw, h - 2, w - side); mvwin(mainw, 1, main_x);
+    wresize(tabw, 1, w); mvwin(tabw, 1, 0);
+    int content_h = h - 3;
+    if (content_h < 1) content_h = 1;
+    wresize(sidew, content_h, side); mvwin(sidew, 2, side_x);
+    wresize(mainw, content_h, w - side); mvwin(mainw, 2, main_x);
     wresize(statusw, 1, w); mvwin(statusw, h - 1, 0);
 }
 
@@ -1057,6 +1415,7 @@ void save_file() {
     fclose(fp);
     set_status("Saved: %s", current_file);
     is_dirty = 0;
+    tab_store_current();
 }
 
 void save_file_as() {
@@ -1071,6 +1430,7 @@ void save_file_as() {
     lsp_prepare_for_file(current_file, lang);
     state_save();
     syntax_recalc_all();
+    tab_store_current();
 }
 
 /* ---------- POPUP ---------- */
@@ -1202,6 +1562,7 @@ static void shortcuts_dialog(void) {
         "Global",
         "  Ctrl+X        Exit",
         "  Ctrl+S        Save",
+        "  F5/F6         Prev/Next tab",
         "",
         "Explorer (file list)",
         "  Up/Down       Move selection (Up at top opens menu)",
@@ -1214,6 +1575,13 @@ static void shortcuts_dialog(void) {
         "  Enter         Activate menu item",
         "  Down          Back to explorer",
         "  Esc           Close menu",
+        "",
+        "Tabs",
+        "  Up (from explorer) Focus tabs",
+        "  Left/Right    Switch tab",
+        "  X/Delete      Close tab",
+        "  Up            Focus menu bar",
+        "  Down/Esc      Back to explorer",
         "",
         "Editor",
         "  Esc           Back to explorer",
@@ -1555,23 +1923,11 @@ static void new_file_prompt(void) {
     char fname[256];
     popup_input("New File", "Enter file name (with extension):", fname, sizeof(fname));
     if (fname[0] == '\0') return;
-    strncpy(current_file, fname, sizeof(current_file)-1);
-    current_file[sizeof(current_file)-1] = '\0';
     /* Ensure the file exists on disk */
-    FILE *fp = fopen(current_file, "a");
+    FILE *fp = fopen(fname, "a");
     if (fp) fclose(fp);
-    buffer_clear();
-    buffer_ensure_capacity(1);
-    if (!buf[0]) buf[0] = line_alloc_empty();
-    lines = 1;
-    buf[0][0] = '\0';
-    cx = cy = rowoff = coloff = 0;
-    is_dirty = 0;
+    tab_create_with_file(fname);
     load_dir();
-    const SyntaxLang *lang = sh_lang_for_file(current_file);
-    lsp_prepare_for_file(current_file, lang);
-    state_save();
-    syntax_recalc_all();
     set_status("New file: %s", current_file);
 }
 
@@ -1587,6 +1943,231 @@ static void open_folder_prompt(void) {
     load_dir();
     state_save();
     set_status("Opened folder: %s", path);
+}
+
+static int parse_hex_color(const char *hex, int *r, int *g, int *b) {
+    if (!hex || hex[0] != '#') return 0;
+    if (!isxdigit((unsigned char)hex[1]) || !isxdigit((unsigned char)hex[2]) ||
+        !isxdigit((unsigned char)hex[3]) || !isxdigit((unsigned char)hex[4]) ||
+        !isxdigit((unsigned char)hex[5]) || !isxdigit((unsigned char)hex[6])) {
+        return 0;
+    }
+    char buf[3] = {0, 0, 0};
+    buf[0] = hex[1]; buf[1] = hex[2];
+    *r = (int)strtol(buf, NULL, 16);
+    buf[0] = hex[3]; buf[1] = hex[4];
+    *g = (int)strtol(buf, NULL, 16);
+    buf[0] = hex[5]; buf[1] = hex[6];
+    *b = (int)strtol(buf, NULL, 16);
+    return 1;
+}
+
+static int line_has_key(const char *line, const char *key) {
+    const char *p = strstr(line, key);
+    if (!p) return 0;
+    if (p != line) {
+        unsigned char prev = (unsigned char)p[-1];
+        if (isalnum(prev) || prev == '_') return 0;
+    }
+    unsigned char next = (unsigned char)p[strlen(key)];
+    if (isalnum(next) || next == '_') return 0;
+    return 1;
+}
+
+static void parse_theme_line(const char *line, const char *key, int *has, int *r, int *g, int *b) {
+    if (!line_has_key(line, key)) return;
+    const char *hex = strchr(line, '#');
+    if (!hex) return;
+    if (parse_hex_color(hex, r, g, b)) *has = 1;
+}
+
+static int parse_theme_file(const char *path, ThemeParsed *out) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) return 0;
+    memset(out, 0, sizeof(*out));
+    char line[512];
+    while (fgets(line, sizeof(line), fp)) {
+        parse_theme_line(line, "background", &out->has_background, &out->bg_r, &out->bg_g, &out->bg_b);
+        parse_theme_line(line, "menu", &out->has_menu, &out->menu_r, &out->menu_g, &out->menu_b);
+        parse_theme_line(line, "sidebar", &out->has_sidebar, &out->sidebar_r, &out->sidebar_g, &out->sidebar_b);
+        parse_theme_line(line, "status", &out->has_status, &out->status_r, &out->status_g, &out->status_b);
+        parse_theme_line(line, "editorBackground", &out->has_editor_bg, &out->editor_bg_r, &out->editor_bg_g, &out->editor_bg_b);
+        parse_theme_line(line, "editorText", &out->has_editor_text, &out->editor_text_r, &out->editor_text_g, &out->editor_text_b);
+        parse_theme_line(line, "keyword", &out->has_keyword, &out->keyword_r, &out->keyword_g, &out->keyword_b);
+        parse_theme_line(line, "lineNumbers", &out->has_line_numbers, &out->line_r, &out->line_g, &out->line_b);
+        parse_theme_line(line, "accent", &out->has_accent, &out->accent_r, &out->accent_g, &out->accent_b);
+    }
+    fclose(fp);
+    return out->has_background || out->has_menu || out->has_sidebar || out->has_status ||
+           out->has_editor_bg || out->has_editor_text || out->has_keyword || out->has_line_numbers ||
+           out->has_accent;
+}
+
+static int rgb_to_ansi8(int r, int g, int b) {
+    static const int palette[8][3] = {
+        {0, 0, 0},
+        {205, 49, 49},
+        {13, 188, 121},
+        {229, 229, 16},
+        {36, 114, 200},
+        {188, 63, 188},
+        {17, 168, 205},
+        {229, 229, 229}
+    };
+    int best = 0;
+    long best_dist = 1L << 30;
+    for (int i = 0; i < 8; i++) {
+        long dr = r - palette[i][0];
+        long dg = g - palette[i][1];
+        long db = b - palette[i][2];
+        long dist = dr * dr + dg * dg + db * db;
+        if (dist < best_dist) { best_dist = dist; best = i; }
+    }
+    return best;
+}
+
+static int rgb_to_ansi256(int r, int g, int b) {
+    if (r == g && g == b) {
+        if (r < 8) return 16;
+        if (r > 248) return 231;
+        return 232 + (r - 8) / 10;
+    }
+    int rc = (r * 5) / 255;
+    int gc = (g * 5) / 255;
+    int bc = (b * 5) / 255;
+    return 16 + (36 * rc) + (6 * gc) + bc;
+}
+
+static int rgb_to_color_index(int r, int g, int b) {
+    if (COLORS >= 256) return rgb_to_ansi256(r, g, b);
+    return rgb_to_ansi8(r, g, b);
+}
+
+static int theme_color_from_rgb(int r, int g, int b) {
+    if (can_change_color() && COLORS >= 16) {
+        if (theme_next_color < COLORS) {
+            int idx = theme_next_color++;
+            int rr = (r * 1000) / 255;
+            int gg = (g * 1000) / 255;
+            int bb = (b * 1000) / 255;
+            if (init_color(idx, rr, gg, bb) == OK) {
+                return idx;
+            }
+        }
+    }
+    return rgb_to_color_index(r, g, b);
+}
+
+static void apply_theme_pairs(void) {
+    init_pair(1, theme_menu_fg, theme_menu_bg);
+    init_pair(2, theme_sidebar_fg, theme_sidebar_bg);
+    init_pair(3, theme_editor_fg, theme_editor_bg);
+    init_pair(4, theme_keyword_fg, theme_editor_bg);
+    init_pair(5, theme_editor_fg, theme_editor_bg);
+    init_pair(6, theme_comment_fg, theme_editor_bg);
+    init_pair(7, theme_string_fg, theme_editor_bg);
+    init_pair(8, theme_number_fg, theme_editor_bg);
+    init_pair(9, theme_preproc_fg, theme_editor_bg);
+    init_pair(10, theme_status_fg, theme_status_bg);
+}
+
+static void reset_theme_defaults(void) {
+    theme_menu_bg = default_theme_menu_bg;
+    theme_menu_fg = default_theme_menu_fg;
+    theme_sidebar_bg = default_theme_sidebar_bg;
+    theme_sidebar_fg = default_theme_sidebar_fg;
+    theme_editor_bg = default_theme_editor_bg;
+    theme_editor_fg = default_theme_editor_fg;
+    theme_keyword_fg = default_theme_keyword_fg;
+    theme_comment_fg = default_theme_comment_fg;
+    theme_string_fg = default_theme_string_fg;
+    theme_number_fg = default_theme_number_fg;
+    theme_preproc_fg = default_theme_preproc_fg;
+    theme_status_bg = default_theme_status_bg;
+    theme_status_fg = default_theme_status_fg;
+    apply_theme_pairs();
+}
+
+static int apply_theme_from_file(const char *path) {
+    ThemeParsed t;
+    if (!parse_theme_file(path, &t)) return 0;
+    theme_next_color = 16;
+    if (t.has_menu) {
+        theme_menu_bg = theme_color_from_rgb(t.menu_r, t.menu_g, t.menu_b);
+    }
+    if (t.has_sidebar) {
+        theme_sidebar_bg = theme_color_from_rgb(t.sidebar_r, t.sidebar_g, t.sidebar_b);
+    }
+    if (t.has_status) {
+        theme_status_bg = theme_color_from_rgb(t.status_r, t.status_g, t.status_b);
+    }
+    if (t.has_editor_bg) {
+        theme_editor_bg = theme_color_from_rgb(t.editor_bg_r, t.editor_bg_g, t.editor_bg_b);
+    } else if (t.has_background) {
+        theme_editor_bg = theme_color_from_rgb(t.bg_r, t.bg_g, t.bg_b);
+    }
+    if (t.has_editor_text) {
+        int fg = theme_color_from_rgb(t.editor_text_r, t.editor_text_g, t.editor_text_b);
+        theme_editor_fg = fg;
+        theme_sidebar_fg = fg;
+        theme_status_fg = fg;
+        theme_menu_fg = fg;
+    }
+    if (t.has_keyword) {
+        theme_keyword_fg = theme_color_from_rgb(t.keyword_r, t.keyword_g, t.keyword_b);
+        theme_preproc_fg = theme_keyword_fg;
+    }
+    if (t.has_line_numbers) {
+        theme_comment_fg = theme_color_from_rgb(t.line_r, t.line_g, t.line_b);
+    }
+    if (t.has_accent) {
+        int acc = theme_color_from_rgb(t.accent_r, t.accent_g, t.accent_b);
+        theme_string_fg = acc;
+        theme_number_fg = acc;
+    }
+    apply_theme_pairs();
+    return 1;
+}
+
+static void import_theme_prompt(void) {
+    char path[PATH_MAX] = "";
+    popup_input("Import Theme", "Theme file path (e.g. /home/user/downloads/theme.tasci):", path, sizeof(path));
+    if (path[0] == '\0') return;
+    if (access(path, R_OK) != 0) {
+        set_status("Error: Cannot read theme file %s", path);
+        return;
+    }
+    if (apply_theme_from_file(path)) {
+        strncpy(current_theme_path, path, sizeof(current_theme_path) - 1);
+        current_theme_path[sizeof(current_theme_path) - 1] = '\0';
+        state_save();
+        set_status("Theme imported: %s", current_theme_path);
+        draw_menu();
+        draw_tabs();
+        draw_sidebar();
+        draw_editor();
+        draw_status(status_msg);
+    } else {
+        set_status("Error: Theme file missing colors");
+    }
+}
+
+static void theme_menu_prompt(void) {
+    const char *items[] = { "Reset to Default", "Import Theme" };
+    int sel = popup_select("Theme", items, 2);
+    if (sel == 0) {
+        reset_theme_defaults();
+        current_theme_path[0] = '\0';
+        state_save();
+        set_status("Theme reset to default");
+        draw_menu();
+        draw_tabs();
+        draw_sidebar();
+        draw_editor();
+        draw_status(status_msg);
+    } else if (sel == 1) {
+        import_theme_prompt();
+    }
 }
 
 static int try_spawn_terminal(const char *cmd) {
@@ -1717,6 +2298,47 @@ void draw_menu() {
     wrefresh(menuw);
 }
 
+static const char *tab_display_name(const Tab *t, char *out, size_t out_sz, int idx) {
+    if (t->path[0]) {
+        const char *base = strrchr(t->path, '/');
+        base = base ? base + 1 : t->path;
+        snprintf(out, out_sz, "%s", base);
+    } else {
+        snprintf(out, out_sz, "Untitled %d", idx + 1);
+    }
+    return out;
+}
+
+void draw_tabs() {
+    if (!tabw) return;
+    tab_store_current();
+    werase(tabw);
+    wbkgd(tabw, COLOR_PAIR(1));
+    int x = 1;
+    int w = getmaxx(tabw);
+    for (int i = 0; i < tab_count; i++) {
+        char name[PATH_MAX];
+        const char *label = tab_display_name(&tabs[i], name, sizeof(name), i);
+        char title[PATH_MAX + 8];
+        snprintf(title, sizeof(title), " %s%s x ", label, tabs[i].is_dirty ? "*" : "");
+        int len = (int)strlen(title);
+        if (x + len >= w - 1) break;
+        if (mode == MODE_TABS && i == tab_sel) {
+            wattron(tabw, A_REVERSE | A_BOLD);
+        } else if (i == tab_current) {
+            wattron(tabw, A_BOLD);
+        }
+        mvwprintw(tabw, 0, x, "%s", title);
+        if (mode == MODE_TABS && i == tab_sel) {
+            wattroff(tabw, A_REVERSE | A_BOLD);
+        } else if (i == tab_current) {
+            wattroff(tabw, A_BOLD);
+        }
+        x += len + 1;
+    }
+    wrefresh(tabw);
+}
+
 void draw_sidebar() {
     werase(sidew);
     wbkgd(sidew,COLOR_PAIR(2));
@@ -1734,7 +2356,242 @@ void draw_sidebar() {
     wrefresh(sidew);
 }
 
+static int is_binary_data(const unsigned char *buf, size_t n) {
+    if (n == 0) return 0;
+    size_t bad = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = buf[i];
+        if (c == '\n' || c == '\r' || c == '\t') continue;
+        if (c < 32 || c > 126) bad++;
+    }
+    return (bad * 5 > n); /* >20% non-printable */
+}
+
+static void draw_preview_for_selected(void) {
+    werase(mainw);
+    wbkgd(mainw, COLOR_PAIR(3));
+    box(mainw, 0, 0);
+    int h, w;
+    getmaxyx(mainw, h, w);
+    if (file_count <= 0) {
+        mvwprintw(mainw, 1, 2, "No files");
+        wrefresh(mainw);
+        return;
+    }
+
+    const char *name = files[sel];
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s", name);
+    mvwprintw(mainw, 1, 2, "Preview: %s", path);
+
+    if (is_dir(name)) {
+        DIR *d = opendir(name);
+        if (!d) {
+            mvwprintw(mainw, 3, 2, "Cannot open directory");
+            wrefresh(mainw);
+            return;
+        }
+        int y = 3;
+        int col_w = (w - 4) / 2;
+        int x = 2;
+        struct dirent *e;
+        while ((e = readdir(d)) && y < h - 1) {
+            char entry[NAME_MAX + 4];
+            snprintf(entry, sizeof(entry), "%s%s", e->d_name, is_dir(e->d_name) ? "/" : "");
+            mvwprintw(mainw, y, x, "%.*s", col_w - 1, entry);
+            if (x > 2) { x = 2; y++; }
+            else x += col_w;
+        }
+        closedir(d);
+        wrefresh(mainw);
+        return;
+    }
+
+    FILE *fp = fopen(name, "r");
+    if (!fp) {
+        mvwprintw(mainw, 3, 2, "Cannot open file");
+        wrefresh(mainw);
+        return;
+    }
+
+    unsigned char probe[1024];
+    size_t n = fread(probe, 1, sizeof(probe), fp);
+    int binary = is_binary_data(probe, n);
+    fseek(fp, 0, SEEK_SET);
+
+    if (binary) {
+        mvwprintw(mainw, 3, 2, "Binary file");
+        mvwprintw(mainw, 4, 2, "Bytes:");
+        int y = 5;
+        int x = 2;
+        for (size_t i = 0; i < n && y < h - 1; i++) {
+            mvwprintw(mainw, y, x, "%02x ", probe[i]);
+            x += 3;
+            if (x > w - 4) { x = 2; y++; }
+        }
+        fclose(fp);
+        wrefresh(mainw);
+        return;
+    }
+
+    const SyntaxLang *lang = sh_lang_for_file(name);
+    const char *lc = (lang && lang->line_comment && lang->line_comment[0]) ? lang->line_comment : NULL;
+    const char *bcs = (lang && lang->block_comment_start && lang->block_comment_start[0]) ? lang->block_comment_start : NULL;
+    const char *bce = (lang && lang->block_comment_end && lang->block_comment_end[0]) ? lang->block_comment_end : NULL;
+    int lc_len = lc ? (int)strlen(lc) : 0;
+    int bcs_len = bcs ? (int)strlen(bcs) : 0;
+    int bce_len = bce ? (int)strlen(bce) : 0;
+    int in_block_comment = 0;
+
+    char line[MAX_LINE];
+    int y = 3;
+    while (fgets(line, sizeof(line), fp) && y < h - 1) {
+        line[strcspn(line, "\n")] = 0;
+        int avail = w - 4;
+        if (avail < 0) avail = 0;
+        int i = 0;
+        int col = 0;
+        char in_string = 0;
+
+        int preproc_start = -1;
+        if (lang_is_c_preproc(lang)) {
+            int j = 0;
+            while (line[j] == ' ' || line[j] == '\t') j++;
+            if (line[j] == '#') preproc_start = j;
+        }
+
+        while (line[i] && col < avail) {
+            if (!in_block_comment && !in_string && preproc_start >= 0 && i >= preproc_start) {
+                wattron(mainw, COLOR_PAIR(9) | A_BOLD);
+                mvwaddnstr(mainw, y, 2 + col, &line[i], avail - col);
+                wattroff(mainw, COLOR_PAIR(9) | A_BOLD);
+                break;
+            }
+            if (line[i] == '\t') {
+                mvwaddch(mainw, y, 2 + col, ' ');
+                i++; col++;
+                continue;
+            }
+
+            if (in_block_comment) {
+                if (bce_len && strncmp(&line[i], bce, (size_t)bce_len) == 0) {
+                    int draw = bce_len;
+                    if (draw > (avail - col)) draw = avail - col;
+                    wattron(mainw, COLOR_PAIR(6) | A_DIM);
+                    mvwaddnstr(mainw, y, 2 + col, &line[i], draw);
+                    wattroff(mainw, COLOR_PAIR(6) | A_DIM);
+                    i += draw; col += draw;
+                    if (draw == bce_len) in_block_comment = 0;
+                    continue;
+                }
+                wattron(mainw, COLOR_PAIR(6) | A_DIM);
+                mvwaddch(mainw, y, 2 + col, line[i]);
+                wattroff(mainw, COLOR_PAIR(6) | A_DIM);
+                i++; col++;
+                continue;
+            }
+
+            if (in_string) {
+                wattron(mainw, COLOR_PAIR(7));
+                mvwaddch(mainw, y, 2 + col, line[i]);
+                wattroff(mainw, COLOR_PAIR(7));
+                if (line[i] == '\\' && line[i + 1]) {
+                    i++; col++;
+                    if (col < avail) {
+                        wattron(mainw, COLOR_PAIR(7));
+                        mvwaddch(mainw, y, 2 + col, line[i]);
+                        wattroff(mainw, COLOR_PAIR(7));
+                        i++; col++;
+                    }
+                    continue;
+                }
+                if (line[i] == in_string) in_string = 0;
+                i++; col++;
+                continue;
+            }
+
+            if (lc_len && strncmp(&line[i], lc, (size_t)lc_len) == 0) {
+                wattron(mainw, COLOR_PAIR(6) | A_DIM);
+                mvwaddnstr(mainw, y, 2 + col, &line[i], avail - col);
+                wattroff(mainw, COLOR_PAIR(6) | A_DIM);
+                break;
+            }
+
+            if (bcs_len && strncmp(&line[i], bcs, (size_t)bcs_len) == 0) {
+                int draw = bcs_len;
+                if (draw > (avail - col)) draw = avail - col;
+                wattron(mainw, COLOR_PAIR(6) | A_DIM);
+                mvwaddnstr(mainw, y, 2 + col, &line[i], draw);
+                wattroff(mainw, COLOR_PAIR(6) | A_DIM);
+                i += draw; col += draw;
+                if (draw == bcs_len) in_block_comment = 1;
+                continue;
+            }
+
+            if (lang_has_string_delim(lang, line[i])) {
+                in_string = line[i];
+                wattron(mainw, COLOR_PAIR(7));
+                mvwaddch(mainw, y, 2 + col, line[i]);
+                wattroff(mainw, COLOR_PAIR(7));
+                i++; col++;
+                continue;
+            }
+
+            if (isdigit((unsigned char)line[i]) ||
+                (line[i] == '.' && isdigit((unsigned char)line[i + 1]))) {
+                int nstart = i;
+                int nlen = 0;
+                while (line[i] &&
+                       (isalnum((unsigned char)line[i]) || line[i] == '.' || line[i] == '_' ||
+                        line[i] == '+' || line[i] == '-')) {
+                    i++;
+                    nlen++;
+                }
+                int draw = nlen;
+                if (draw > (avail - col)) draw = avail - col;
+                wattron(mainw, COLOR_PAIR(8));
+                mvwaddnstr(mainw, y, 2 + col, &line[nstart], draw);
+                wattroff(mainw, COLOR_PAIR(8));
+                col += draw;
+                if (draw < nlen) break;
+                continue;
+            }
+
+            if (isalpha((unsigned char)line[i]) || line[i] == '_') {
+                int wstart = i;
+                int wlen = 0;
+                while (line[i] && (isalnum((unsigned char)line[i]) || line[i] == '_')) {
+                    i++;
+                    wlen++;
+                }
+                int draw = wlen;
+                if (draw > (avail - col)) draw = avail - col;
+                if (lang && sh_is_keyword(lang, &line[wstart], wlen)) {
+                    wattron(mainw, COLOR_PAIR(4) | A_BOLD);
+                    mvwaddnstr(mainw, y, 2 + col, &line[wstart], draw);
+                    wattroff(mainw, COLOR_PAIR(4) | A_BOLD);
+                } else {
+                    mvwaddnstr(mainw, y, 2 + col, &line[wstart], draw);
+                }
+                col += draw;
+                if (draw < wlen) break;
+                continue;
+            }
+
+            mvwaddch(mainw, y, 2 + col, line[i]);
+            i++; col++;
+        }
+        y++;
+    }
+    fclose(fp);
+    wrefresh(mainw);
+}
+
 void draw_editor() {
+    if (mode == MODE_EXPLORER) {
+        draw_preview_for_selected();
+        return;
+    }
     werase(mainw);
     wbkgd(mainw, COLOR_PAIR(3));
     box(mainw,0,0);
@@ -1986,11 +2843,32 @@ void draw_editor() {
 
 void draw_status(const char *msg){
     werase(statusw);
+    wbkgd(statusw, COLOR_PAIR(10));
     if(show_status_bar) {
         char info[256];
         const char *name = current_file[0] ? current_file : "[No Name]";
-        snprintf(info, sizeof(info), "%s  Ln %d/%d  Col %d  Lines %d",
-                 name, cy + 1, lines, cx + 1, lines);
+        long rss_kb = 0, vsz_kb = 0;
+        get_mem_usage_cached(&rss_kb, &vsz_kb);
+        char rss_buf[32] = "";
+        char vsz_buf[32] = "";
+        if (rss_kb > 0) {
+            if (rss_kb < 10240) snprintf(rss_buf, sizeof(rss_buf), "RSS %ld KB", rss_kb);
+            else snprintf(rss_buf, sizeof(rss_buf), "RSS %.2f MB", (double)rss_kb / 1024.0);
+        }
+        if (vsz_kb > 0) {
+            if (vsz_kb < 10240) snprintf(vsz_buf, sizeof(vsz_buf), "VSZ %ld KB", vsz_kb);
+            else snprintf(vsz_buf, sizeof(vsz_buf), "VSZ %.2f MB", (double)vsz_kb / 1024.0);
+        }
+        if (rss_buf[0] && vsz_buf[0]) {
+            snprintf(info, sizeof(info), "%s  Ln %d/%d  Col %d  Lines %d  %s  %s",
+                     name, cy + 1, lines, cx + 1, lines, rss_buf, vsz_buf);
+        } else if (rss_buf[0]) {
+            snprintf(info, sizeof(info), "%s  Ln %d/%d  Col %d  Lines %d  %s",
+                     name, cy + 1, lines, cx + 1, lines, rss_buf);
+        } else {
+            snprintf(info, sizeof(info), "%s  Ln %d/%d  Col %d  Lines %d",
+                     name, cy + 1, lines, cx + 1, lines);
+        }
         int w = getmaxx(statusw);
         if (msg && msg[0] && (time(NULL) - status_time) < 5) {
             mvwprintw(statusw,0,2,"%s",msg);
@@ -2002,6 +2880,7 @@ void draw_status(const char *msg){
     wrefresh(statusw);
 }
 
+static int confirm_discard_or_save(void) __attribute__((unused));
 static int confirm_discard_or_save(void) {
     if (!is_dirty) return 1;
     const char *items[] = { "Save", "Don't Save", "Cancel" };
@@ -2060,27 +2939,50 @@ int main(int argc, char *argv[]){
     int string_fg = COLOR_YELLOW;
     int number_fg = COLOR_MAGENTA;
     int preproc_fg = COLOR_BLUE;
-    init_pair(1, menu_fg, menu_bg);
-    /* Sidebar: neutral light background */
-    init_pair(2, sidebar_fg, sidebar_bg);
-    /* Editor: dark theme */
-    init_pair(3, editor_fg, editor_bg);
-    /* Keywords: readable highlight on editor background */
-    init_pair(4, keyword_fg, editor_bg);
-    /* Cursor: white bar on editor background */
-    init_pair(5, cursor_fg, editor_bg);
-    /* Syntax: VSCode-like basics */
-    init_pair(6, comment_fg, editor_bg);
-    init_pair(7, string_fg, editor_bg);
-    init_pair(8, number_fg, editor_bg);
-    init_pair(9, preproc_fg, editor_bg);
+
+    theme_menu_bg = menu_bg;
+    theme_menu_fg = menu_fg;
+    theme_sidebar_bg = sidebar_bg;
+    theme_sidebar_fg = sidebar_fg;
+    theme_editor_bg = editor_bg;
+    theme_editor_fg = editor_fg;
+    theme_keyword_fg = keyword_fg;
+    theme_comment_fg = comment_fg;
+    theme_string_fg = string_fg;
+    theme_number_fg = number_fg;
+    theme_preproc_fg = preproc_fg;
+    theme_status_bg = menu_bg;
+    theme_status_fg = menu_fg;
+    apply_theme_pairs();
+
+    default_theme_menu_bg = theme_menu_bg;
+    default_theme_menu_fg = theme_menu_fg;
+    default_theme_sidebar_bg = theme_sidebar_bg;
+    default_theme_sidebar_fg = theme_sidebar_fg;
+    default_theme_editor_bg = theme_editor_bg;
+    default_theme_editor_fg = theme_editor_fg;
+    default_theme_keyword_fg = theme_keyword_fg;
+    default_theme_comment_fg = theme_comment_fg;
+    default_theme_string_fg = theme_string_fg;
+    default_theme_number_fg = theme_number_fg;
+    default_theme_preproc_fg = theme_preproc_fg;
+    default_theme_status_bg = theme_status_bg;
+    default_theme_status_fg = theme_status_fg;
+
+    if (session_restore_has_theme && access(session_restore_theme_path, R_OK) == 0) {
+        if (apply_theme_from_file(session_restore_theme_path)) {
+            strncpy(current_theme_path, session_restore_theme_path, sizeof(current_theme_path) - 1);
+            current_theme_path[sizeof(current_theme_path) - 1] = '\0';
+        }
+    }
 
     if(!getcwd(cwd,sizeof(cwd))) cwd[0]='\0';
     load_dir();
 
     menuw=newwin(1,COLS,0,0);
-    sidew=newwin(LINES-2,SIDEBAR,1,0);
-    mainw=newwin(LINES-2,COLS-SIDEBAR,1,SIDEBAR);
+    tabw=newwin(1,COLS,1,0);
+    sidew=newwin(LINES-3,SIDEBAR,2,0);
+    mainw=newwin(LINES-3,COLS-SIDEBAR,2,SIDEBAR);
     statusw=newwin(1,COLS,LINES-1,0);
     layout_windows();
 
@@ -2102,6 +3004,7 @@ int main(int argc, char *argv[]){
             session_restore_has_file = 0;
         }
     }
+    tabs_init_from_current();
     struct timeval last_blink;
     gettimeofday(&last_blink, NULL);
     while(1){
@@ -2116,28 +3019,28 @@ int main(int argc, char *argv[]){
         lsp_poll();
         editor_scroll();
         explorer_scroll();
-        draw_menu(); draw_sidebar(); draw_editor(); draw_status(status_msg);
+        draw_menu(); draw_tabs(); draw_sidebar(); draw_editor(); draw_status(status_msg);
 
         int ch=getch();
         if (ch == ERR) continue;
         if(ch==KEY_RESIZE) { layout_windows(); continue; }
-        if(ch==24) break; // Ctrl+X
+        if(ch==24){ if (confirm_exit_all()) break; else continue; } // Ctrl+X
         if(ch==19){ save_file(); }
         if(ch==23){ set_status("Word wrap %s", soft_wrap ? "off" : "on"); soft_wrap=!soft_wrap; }
+        if(ch==KEY_F(5)){ tab_prev(); continue; }
+        if(ch==KEY_F(6)){ tab_next(); continue; }
 
         /* ---------- EXPLORER ---------- */
         if(mode==MODE_EXPLORER){
-            if(ch==KEY_UP && sel==0) mode=MODE_MENU;
+            if(ch==KEY_UP && sel==0) { mode=MODE_TABS; tab_sel = tab_current; }
             else if(ch==KEY_UP && sel>0) sel--;
             else if(ch==KEY_DOWN && sel<file_count-1) sel++;
             else if(ch=='\n'){
                 if(is_dir(files[sel])){
                     if(chdir(files[sel])==0){ if(!getcwd(cwd,sizeof(cwd))) cwd[0]='\0'; load_dir(); }
                 }else{
-                    if (confirm_discard_or_save()) {
-                        load_file(files[sel]);
-                        mode=MODE_EDITOR;
-                    }
+                    tab_open_file(files[sel]);
+                    mode=MODE_EDITOR;
                 }
             }else if(ch==KEY_BACKSPACE||ch==127){
                 if(chdir("..")==0){ if(!getcwd(cwd,sizeof(cwd))) cwd[0]='\0'; load_dir(); }
@@ -2151,7 +3054,7 @@ int main(int argc, char *argv[]){
         else if(mode==MODE_MENU){
             if(ch==KEY_LEFT && menu_sel>0) menu_sel--;
             else if(ch==KEY_RIGHT && menu_sel<MENU_ITEMS-1) menu_sel++;
-            else if(ch==KEY_DOWN) mode=MODE_EXPLORER;
+            else if(ch==KEY_DOWN) { mode=MODE_TABS; tab_sel = tab_current; }
             else if(ch=='\n'){
                 switch(menu_sel){
                     case 0: { /* Edit */
@@ -2203,8 +3106,23 @@ int main(int argc, char *argv[]){
                     case 7: save_file(); break;
                     case 8: save_file_as(); break;
                     case 9: open_folder_prompt(); break;
-                    case 10: popup("About","Open-source code editor TASCI\nCode editor made by tasic928"); break;
+                    case 10: theme_menu_prompt(); break;
+                    case 11: popup("About","Open-source code editor TASCI\nCode editor made by tasic928"); break;
                 }
+            }
+            else if(ch==27) mode=MODE_EXPLORER;
+        }
+
+        /* ---------- TABS ---------- */
+        else if(mode==MODE_TABS){
+            if(ch==KEY_LEFT && tab_sel>0){ tab_sel--; tab_switch(tab_sel); }
+            else if(ch==KEY_RIGHT && tab_sel<tab_count-1){ tab_sel++; tab_switch(tab_sel); }
+            else if(ch=='\n'){ tab_switch(tab_sel); mode=MODE_EDITOR; }
+            else if(ch==KEY_DOWN){ mode=MODE_EXPLORER; }
+            else if(ch==KEY_UP){ mode=MODE_MENU; }
+            else if(ch=='x' || ch=='X' || ch==KEY_DC || ch==4){
+                tab_close(tab_sel);
+                if (tab_sel >= tab_count) tab_sel = tab_count - 1;
             }
             else if(ch==27) mode=MODE_EXPLORER;
         }

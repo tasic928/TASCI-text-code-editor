@@ -1,0 +1,16 @@
+# TASCI Theme
+name: test
+background: #12141b
+accent: #2c6bff
+editorBackground: #12141b
+editorText: #e600eb
+keyword: #5eead4
+sidebar: #1b1f2a
+menu: #0f17ff
+status: #0b1220
+tabsBackground: #0d1117
+tabsText: #9aa4b2
+tabsActiveBackground: #1b1f2a
+tabsActiveText: #e6e7eb
+lineNumbers: #7a8799
+selection: #344f7a
