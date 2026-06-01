@@ -54,9 +54,4 @@ TASCI running with syntax highlighting and theming support.
 
 ---
 
-## 📜 License
 
-Open source and free to use.
-
-```
-```
