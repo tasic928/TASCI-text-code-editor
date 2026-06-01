@@ -35,7 +35,7 @@ make
 
 ---
 
-## 📸 Screenshot
+## 📸 Preview
 
 TASCI running with syntax highlighting and theming support.
 
