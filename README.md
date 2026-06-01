@@ -1,17 +1,3 @@
-````md
-<p align="center">
-  <img src="./tasci-screenshot.jpg" alt="TASCI editor screenshot" width="900"/>
-</p>
-
-<h1 align="center">TASCI</h1>
-
-<p align="center">
-  <b>A ridiculously lightweight terminal code editor written in C.</b>
-</p>
-
-<p align="center">
-  Fast • Tiny • Keyboard-focused • Linux native
-</p>
 
 ---
 
