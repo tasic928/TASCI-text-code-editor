@@ -1,18 +1,18 @@
 
 ---
 
-## ✨ Features
+##  Features
 
-- ⚡ **~50KB binary**
-- 🎨 **Syntax highlighting**
-- 🛠️ **Built-in theme creator**
-- ⌨️ **Keyboard-focused workflow**
-- 🚀 **Instant startup**
-- 🐧 **Linux native**
+-  **~50KB binary**
+-  **Syntax highlighting**
+-  **Built-in theme creator**
+-  **Keyboard-focused workflow**
+-  **Instant startup**
+-  **Linux native**
 
 ---
 
-## 🤔 Why use TASCI?
+##  Why use TASCI?
 
 Most modern text editors are powerful — but often bloated, slow to start, or packed with features you may never use.
 
@@ -35,7 +35,7 @@ make
 
 ---
 
-## 📸 Preview
+##  Preview
 
 TASCI running with syntax highlighting and theming support.
 
@@ -45,7 +45,7 @@ TASCI running with syntax highlighting and theming support.
 
 ---
 
-## 🚀 Goals
+##  Goals
 
 * Stay lightweight
 * Stay fast
