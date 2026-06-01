@@ -1,3 +1,12 @@
 ![TASCI editor screenshot](./tasci-screenshot.jpg)
-this is a good looking fast open source text editor with a theme
-it features syntax highlightning and a theme creator 
+
+TASCI
+
+A ridiculously lightweight terminal code editor written in C.
+
+• ~50KB binary
+• Syntax highlighting
+• Theme creator
+• Keyboard-focused workflow
+• Fast startup
+• Linux native 
