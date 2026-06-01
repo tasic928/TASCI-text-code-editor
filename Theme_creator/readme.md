@@ -1,1 +1,1 @@
-to run it type in python3 or what ever ver is the latest so python3 theme_creator.py
+This is a theme creator for the TASCI text/code editor enjoy it is easy and simple to use!
